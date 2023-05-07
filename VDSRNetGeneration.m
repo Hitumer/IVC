@@ -1,0 +1,68 @@
+function net_generation = VDSRNetGeneration(directory,flag)
+    dataDir = '';
+    trainImagesDir = fullfile(dataDir,directory);
+    exts = [".jpg",".bmp",".png"];
+    pristineImages = imageDatastore(trainImagesDir,FileExtensions=exts);
+    numel(pristineImages.Files);
+    upsampledDirName = string(trainImagesDir)+filesep+"upsampledImages";
+    residualDirName = string(trainImagesDir)+filesep+"residualImages";
+    scaleFactors = [2 3 4];
+    createVDSRTrainingSet(pristineImages,scaleFactors,upsampledDirName,residualDirName);
+    upsampledImages = imageDatastore(upsampledDirName,FileExtensions=".mat",ReadFcn=@matRead);
+    residualImages = imageDatastore(residualDirName,FileExtensions=".mat",ReadFcn=@matRead);
+    augmenter = imageDataAugmenter( ...
+        RandRotatio=@()randi([0,1],1)*90, ...
+        RandXReflection=true);
+    patchSize = [41 41];
+    patchesPerImage = 64;
+    dsTrain = randomPatchExtractionDatastore(upsampledImages,residualImages,patchSize, ...
+        DataAugmentation=augmenter,PatchesPerImage=patchesPerImage);
+    %%
+    networkDepth = 20;
+    firstLayer = imageInputLayer([41 41 1],Name="InputLayer",Normalization="none");
+    convLayer = convolution2dLayer(3,64,Padding=1, ...
+        WeightsInitializer="he",BiasInitializer="zeros",Name="Conv1");
+    relLayer = reluLayer(Name="ReLU1");
+    middleLayers = [convLayer relLayer];
+    for layerNumber = 2:networkDepth-1
+        convLayer = convolution2dLayer(3,64,Padding=[1 1], ...
+            WeightsInitializer="he",BiasInitializer="zeros", ...
+            Name="Conv"+num2str(layerNumber));
+        
+        relLayer = reluLayer(Name="ReLU"+num2str(layerNumber));
+        middleLayers = [middleLayers convLayer relLayer];    
+    end
+    convLayer = convolution2dLayer(3,1,Padding=[1 1], ...
+        WeightsInitializer="he",BiasInitializer="zeros", ...
+        NumChannels=64,Name="Conv"+num2str(networkDepth));
+    finalLayers = [convLayer regressionLayer(Name="FinalRegressionLayer")];
+    layers = [firstLayer middleLayers finalLayers];
+    maxEpochs = 3;
+    epochIntervals = 1;
+    initLearningRate = 0.1;
+    learningRateFactor = 0.1;
+    l2reg = 0.0001;
+    miniBatchSize = 64;
+    options = trainingOptions("sgdm", ...
+        Momentum=0.9, ...
+        InitialLearnRate=initLearningRate, ...
+        LearnRateSchedule="piecewise", ...
+        LearnRateDropPeriod=10, ...
+        LearnRateDropFactor=learningRateFactor, ...
+        L2Regularization=l2reg, ...
+        MaxEpochs=maxEpochs, ...
+        MiniBatchSize=miniBatchSize, ...
+        GradientThresholdMethod="l2norm", ...
+        GradientThreshold=0.01, ...
+        Plots="training-progress", ...
+        Verbose=false);
+    if flag
+        net = trainNetwork(dsTrain,layers,options);
+        modelDateTime = string(datetime("now",Format="yyyy-MM-dd-HH-mm-ss"));
+        save("trainedVDSR-"+modelDateTime+".mat","net");
+        net_generation = net;
+    else
+        load("trainedVDSR-2023-02-18-22-29-28.mat");
+        net_generation = net;
+    end
+end
